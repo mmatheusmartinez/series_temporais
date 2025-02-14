@@ -1,0 +1,882 @@
+---
+title: ''
+output:
+  pdf_document: default
+  html_document:
+    df_print: paged
+fontsize: 12pt
+---
+
+\begin{center}
+ \Large Universidade de Braslia \\
+ Análise de Séries Temporais 
+\end{center} 
+ \vskip 10em
+\begin{center}
+ \Large \textbf{Competição de Previsão M3 - Série 2049}
+ \par
+ \vskip 6em
+\end{center}
+\setlength{\baselineskip}{.5cm}
+\small \textbf{}
+\par
+\vskip 5em
+
+\begin{flushright}
+\small Matheus Martinez \\ 
+\vskip 1em
+\end{flushright}
+
+\vskip 5em
+\begin{center}
+\setlength{\baselineskip}{.5cm}
+Brasília\\
+Junho de 2024
+\end{center}
+\newpage
+
+
+
+```{r,echo=FALSE,message=FALSE,,warning=FALSE, echo=FALSE}
+library(Mcomp)
+library(tseries)
+library(tidyverse)
+library(forecast)
+
+data(M3)
+id=2208
+
+serie <- M3[[id]]$x
+M3[[id]] %>% plot()
+```
+
+
+\section{Introdução}
+
+O presente trabalho foi realizado com base na série temporal de ID 2049, presente no banco de dados da competição de previsão M3, disponibilizada no pacote Mcomp do R. 
+
+```{r echo=FALSE}
+plot(serie,main=M3[[id]]$description)
+```
+
+Para melhor visualização da série, foi feita sua decomposição utilizando a função mstl(). Os resultados obtidos são observados na figura a seguir.
+
+```{r echo=FALSE}
+mstl(serie, lambda = 'auto') %>%
+  autoplot() +
+  labs(x = "Ano") +
+  theme_bw()
+```
+
+Nota-se que a série escolhida tem tendência de crescimento de forma linear. Em relação a componente de sazonalidade, a série é mensal, ou seja, apresenta ciclo sazonal m = 12. Já em relação aos resíduos, parece que ainda há sazonalidade presente, afastando os mesmos de um comportamento completamente aleatório, não sendo próxima de um ruído branco. 
+
+\section{ARIMA}
+
+\subsection{Série sem transformação}
+
+  Primeiro foi verificado pela função _ndiffs()_ do R que para que série se tornar estacionária seria necessário aplicar apenas 1 diferenciação, e para retirar a raiz unitária sazonal precisaria também de uma diferença a partir da função _nsdiffs()_, também do R. Com isso, aplicou-se as diferenças e a estacionariedade da série diferenciada não foi rejeitada através do teste KPSS ( _kpss.test()_ ), que teve p-valor maior que 0.05, dessa maneira, à um nível de 5% de significância, não rejeitamos a hipótese de estacionariedade.
+
+```{r warning=FALSE, include=FALSE}
+serie %>% ndiffs()
+
+serie %>% diff() %>% nsdiffs()
+
+X <- serie %>% diff() %>% diff(lag=12)
+```
+
+
+```{r echo=FALSE, warning=FALSE}
+p_valor <- c(kpss.test(X)$p.value)
+Estatística <- c(kpss.test(X)$statistic)
+Teste <- c("Estacionariedade")
+d <- data.frame(Estatística,p_valor)
+knitr::kable(d)
+
+cbind('Série Original' = serie, 'Uma Diferença' = diff(serie),
+      'Diferença Sazonal' = X) %>% 
+  autoplot(facets = T) +
+  labs(x = "Ano", y = "Remessas de usina de Papel de Jornal") +
+  scale_x_continuous(breaks = seq(1982,1992,1)) +
+  theme_bw() 
+
+```
+
+  Com os resultados à cima, partimos para os gráficos de ACF e PACF, com o objetivo de escolher o melhor modelo ARIMA para a série sem transformação de Box-Cox:
+  
+```{r echo=FALSE}
+# GRAFICOS ACF E PACF
+par(mfrow=c(1,2))     # NORMAL E SAZONAL
+acf(X,lag.max = 5*12) # AMORTIZADO E CORTE NO 1
+pacf(X,lag.max = 5*12) # CORTE NO 1 E AMORTIZADO
+# AR 1 e MAs 1
+```
+
+No gráfico ACF, nota-se uma queda amortizada olhando o gráfico como um todo e, quanto à parte sazonal, observa-se um corte no \textit{lag}=1 . E no PACF, há um corte no \textit{lag}=1 olhando para o gráfico em geral e ao analisar a parte sazonal, observa-se uma queda amortizada. Tais análises nos permitem concluir que os modelos mais adequados para a série são **Auto Regressivo**, com $p=1$ e **Médias Móveis Sazonal**, com $Q=1$.
+
+Além disso, ajustamos o modelo e verificamos, pelos coeficientes, que as raízes do modelo $\textbf{ARIMA(1,1,0)x(0,1,1)}_{12}$ estão fora do círculo unitário, tornando o modelo inversível. O modelo candidato, seus coeficientes e raízes são mostrados abaixo:
+
+```{r echo=FALSE}
+fit = Arima(serie, order=c(1,1,0), seasonal = c(0,1,1),
+            method = "CSS",include.mean = F)
+
+dfit= data.frame(fit$coef)
+names(dfit)= "Coeficientes"
+knitr::kable(dfit, align = "c")
+knitr::kable(data.frame(Modelo='Arima(y = serie, order = c(1, 1, 0), seasonal = c(0, 1, 1), include.mean = F, method = "CSS")'),align = "c") #call do modelo
+
+```
+
+Agora, parte-se para a análise de resíduos para verificar se o modelo selecionado foi adequado.
+
+```{r echo=FALSE, warning=FALSE}
+
+par(mfrow=c(1,1))
+residuos <- fit$residuals %>% window(start=c(1984,3))
+#par(mfrow=c(1,3))
+plot(residuos,main="Resíduos após inicialização do modelo");
+par(mfrow=c(1,2))
+qqnorm(residuos); qqline(residuos);
+acf(residuos, lag.max=12*5)
+
+p_valor <- c(shapiro.test(residuos)$p.value,kpss.test(residuos)$p.value,Box.test(residuos, lag=15, type = "Ljung-Box")$p.value)
+Estatística <- c(shapiro.test(residuos)$statistic,kpss.test(residuos)$statistic,Box.test(residuos, lag=15, type = "Ljung-Box")$statistic)
+Teste <- c("Normalidade","Estacionariedade","Independencia")
+d <- data.frame(Estatística,p_valor)
+knitr::kable(d)
+
+
+```
+
+Percebe-se pelos gráficos acima que os resíduos estão aleatorizados, são normais pelo Teste de Shapiro-Wilk, estacionários pelo teste KPSS e independentes pelo teste de Ljung-Box. Além de não sobrar nenhuma correlação significativa para os resíduos no gráfico ACF. As suposições dos resíduos são seguidas.
+
+
+\subsection{Série com transformação de Box-Cox}
+
+  Primeiramente, para a série com transformação de Box-Cox (parâmetro $\lambda=0,837$), leu-se pela função _ndiffs()_ do R que para que série se tornar estacionária seria necessário aplicar 1 diferenciação, e para excluir a raiz unitária sazonal precisaria também de uma diferença a partir da função _nsdiffs()_. Com isso, aplicou-se as diferenças e a estacionariedade da série diferenciada não foi rejeitada através do teste KPSS ( _kpss.test()_ ), que teve p-valor maior que 0.05, dessa maneira, à um nível de 5% de significância, não foi rejeitada a hipótese de estacionariedade.
+
+```{r echo=FALSE, warning=FALSE}
+## USANDO BOXCOX
+lambda <-BoxCox.lambda(serie)
+
+serie_bc <- BoxCox(serie, lambda = lambda)
+plot.ts(serie_bc,main="Série Transformada")
+
+#serie_bc %>% ndiffs()
+
+#serie_bc %>% diff() %>% nsdiffs() 
+
+X_bc <- serie_bc %>% diff() %>% diff(lag=12)
+
+
+p_valor <- c(kpss.test(X_bc)$p.value)
+Estatística <- c(kpss.test(X_bc)$statistic)
+Teste <- c("Estacionariedade")
+d <- data.frame(Estatística,p_valor)
+knitr::kable(d)
+
+cbind('Série Transformada' = serie_bc, 'Uma Diferença' = diff(serie_bc),
+      'Diferença Sazonal' = X_bc) %>% 
+  autoplot(facets = T) +
+  labs(x = "Ano", y = "Remessas de usina de Papel de Jornal") +
+  scale_x_continuous(breaks = seq(1982,1992,1)) +
+  theme_bw() 
+```
+
+
+  Com os resultados à cima, partimos para os gráficos de ACF e PACF, com o objetivo de escolher o melhor modelo ARIMA para a série com transformação de Box-Cox:
+
+
+```{r echo=FALSE}
+
+##GRAFICOS ACF E PACF
+par(mfrow=c(1,2))       # NORMAL E SAZONAL
+acf(X_bc,lag.max = 5*12) # AMORTIZADO E CORTE NO 1
+pacf(X_bc,lag.max = 5*12) # CORTE NO 1 E AMORTIZADO
+#AR 1 E MAs 1
+
+```
+
+A partir da interpretação dos gráficos, percebe-se, do ponto de vista sazonal, um claro corte da série no gráfico ACF no _Lag_ 1, como também uma amortização no gráfico PACF, sendo então um modelo **MA Sazonal**, onde $Q=1$. Já do ponto de vista da série sem a sazonalidade, percebe-se uma amortização tanto no gráfico ACF e também um corte no PACF, o que indica um modelo **AR**, onde adotaremos $p=1$.
+
+Além disso, ao ajustar e verificar o modelo, vê-se, pelos seus coeficientes, que as raízes do modelo $\textbf{ARIMA(1,1,0)x(0,1,1)}_{12}$ estão fora do círculo unitário, tornando o modelo inversível e estacionário. O modelo candidato, seus coeficientes e raízes são mostrados abaixo:
+
+
+```{r echo=FALSE}
+fit2 = Arima(serie_bc, order=c(1,1,0), seasonal = c(0,1,1),
+            method = "CSS",include.mean = F,lambda = lambda)
+dfit2= data.frame(fit2$coef)
+names(dfit2)= "Coeficientes"
+knitr::kable(dfit2, align = "c")
+knitr::kable(data.frame(Modelo="Arima(y = serie_bc, order = c(1, 1, 0), seasonal = c(0, 1, 1), include.mean = F, lambda = lambda, method = 'CSS')"),align = "c") #call do modelo
+```
+
+Agora, parte-se para a análise de resíduos para verificar se o modelo escolhido foi adequado.
+
+```{r echo=FALSE, warning=FALSE}
+par(mfrow=c(1,1))
+residuos <- fit2$residuals %>% window(start=c(1984,3))
+#par(mfrow=c(1,3))
+plot(residuos,main="Resíduos após inicialização do modelo");
+par(mfrow=c(1,2))
+qqnorm(residuos); qqline(residuos);
+acf(residuos, lag.max=12*5)
+
+p_valor <- c(shapiro.test(residuos)$p.value,kpss.test(residuos)$p.value,Box.test(residuos, lag=15, type = "Ljung-Box")$p.value)
+Estatística <- c(shapiro.test(residuos)$statistic,kpss.test(residuos)$statistic,Box.test(residuos, lag=15, type = "Ljung-Box")$statistic)
+Teste <- c("Normalidade","Estacionariedade","Independencia")
+d <- data.frame(Estatística,p_valor)
+knitr::kable(d)
+
+```
+
+Percebe-se pelos gráficos acima que os resíduos estão aleatorizados, são normais pelo Teste de Shapiro-Wilk, estacionários pelo teste KPSS e independentes pelo teste de Ljung-Box. Além de não sobrar nenhuma correlação significativa para os resíduos no gráfico ACF. As suposições dos resíduos são seguidas.
+
+
+\section{ETS}
+
+\subsection{Série sem transformação}
+
+Como foi visto na introdução, sabe-se que a série possui tendência positiva e sazonalidade anual, por isso, para seleção do modelo ETS, será testado todas as combinações de modelos com sazonalidade e tendencia. Além disso, sabe-se que a série é extritamente positiva e por isso serão testados modelos com erros aditivos e multiplicativos, com exceção dos modelos com erros aditivos e sazonalidade multiplicativa pois estes são instáveis.
+
+A tebela a seguir apresenta para cada modelo o resultado do critério de informação de Akaike (AIC), o AIC corrigido (AICc) e o critério de informação Bayesiano (BIC).
+
+```{r echo=FALSE}
+fit1<- ets(serie,model = "AAA")
+fit2<- ets(serie,model = "AAA",damped = TRUE)
+fit3<- ets(serie,model = "MAA")
+fit4<- ets(serie,model = "MAA",damped = TRUE)
+fit5<- ets(serie,model = "MAM")
+fit6<- ets(serie,model = "MMM")
+fit7<- ets(serie,model = "MAM",damped = TRUE)
+fit8<- ets(serie,model = "MMM", damped = TRUE)
+
+AIC <- rbind(fit1$aic,fit2$aic,fit3$aic,fit4$aic,fit5$aic,fit6$aic,fit7$aic,fit8$aic)
+AICc <- rbind(fit1$aicc,fit2$aicc,fit3$aicc,fit4$aicc,fit5$aicc,fit6$aicc,fit7$aicc,fit8$aicc)
+BIC <- rbind(fit1$bic,fit2$bic,fit3$bic,fit4$bic,fit5$bic,fit6$bic,fit7$bic,fit8$bic)
+
+Modelo <- cbind(c("ETS(A,A,A)","ETS(A,Ad,A)","ETS(M,A,A)","ETS(M,Ad,A)","ETS(M,A,M)","ETS(M,M,M)",
+                  "ETS(M,Ad,M)","ETS(M,Md,M)"))
+
+d <- data.frame(Modelo,AIC,AICc,BIC)
+knitr::kable(d)
+```
+
+Os resultados apresentados na tabela anterior mostram que o modelo ETS(A,A,A) foi o que apresentou o menor valor para o AIC, AICc e BIC e por isso foi o escolhido. O modelo apresentou os parâmetros: alpha = 0.4866, beta  = 1e-04 e gamma = 0.0011. 
+
+O gráfico a seguir mostra a decomposição da série. 
+
+```{r echo=FALSE}
+plot(fit1)
+```
+
+É interessante notar no gráfico anterior que a componente de crescimento (slope) não varia muito, o que também pode ser verificado pelo valor de beta muito próximo de zero.
+
+A seguir será feita a análise de resíduos
+
+```{r echo=FALSE}
+E <- fit1$residuals
+
+par(mfrow=c(2,2))
+plot(E)
+acf(E)
+pacf(E)
+qqnorm(E)
+qqline(E)
+```
+A partir da análise dos gráficos anteriores, percebe-se que não há indicação de autocorrelação dos resíduos e que eles parecem seguir normalidade. Para confirmar o que foi percebido nos gráficos, foram realizados os testes de Shapiro-Wilk, Kpss e Ljung-Box. Os p-valores apresentados na tabela a seguir confirmam que não deve-se rejeitar as hipóteses de normalidade, estacionaridade e independência dos resíduos.
+
+```{r echo=FALSE, warning=FALSE}
+p_valor <- c(shapiro.test(E)$p.value,kpss.test(E)$p.value,Box.test(E,lag=15,type="Ljung-Box",fitdf=3)$p.value)
+Estatística <- c(shapiro.test(E)$statistic,kpss.test(E)$statistic,Box.test(E,lag=15,type="Ljung-Box",fitdf=3)$statistic)
+Teste <- c("Normalidade","Estacionariedade","Independencia")
+d <- data.frame(Estatística,p_valor)
+knitr::kable(d)
+
+```
+
+\subsection{Série com transformação de Box-Cox}
+
+```{r include=FALSE}
+lambda <- serie %>% BoxCox.lambda()
+serie_box <- serie %>% BoxCox(lambda)
+```
+
+Para realizar a transformação de Box-Cox na série escolhida, foi utilizado $\lambda=0,837$, obtido através da função BoxCox.lambda(). Após a transformação, tem-se a série apresentada a seguir.
+
+```{r echo=FALSE}
+plot(serie_box,main="Serie com\ntransformacao de Box-Cox")
+mstl(serie_box)%>%plot()
+```
+
+Após a transformação, percebe-se que a série ainda apresenta tendencia e sazonalidade então serão analisados modelos ETS com sazonalidade e tendencia. Além disso, a série é estritamente positiva, então serão considerados erros aditivos e multiplicativos. Assim como no caso sem tranformação, não serão analisados modelos com erros aditivos e sazonalidade multiplicativa pois estes são instáveis.
+
+A tebela a seguir apresenta para cada modelo o resultado do critério de informação de Akaike (AIC), o AIC corrigido (AICc) e o critério de informação Bayesiano (BIC).
+
+```{r echo=FALSE}
+fit1<- ets(serie_box,model = "AAA")
+fit2<- ets(serie_box,model = "AAA",damped = TRUE)
+fit3<- ets(serie_box,model = "MAA")
+fit4<- ets(serie_box,model = "MAA",damped = TRUE)
+fit5<- ets(serie_box,model = "MAM")
+fit6<- ets(serie_box,model = "MMM")
+fit7<- ets(serie_box,model = "MAM",damped = TRUE)
+fit8<- ets(serie_box,model = "MMM", damped = TRUE)
+
+AIC <- rbind(fit1$aic,fit2$aic,fit3$aic,fit4$aic,fit5$aic,fit6$aic,fit7$aic,fit8$aic)
+AICc <- rbind(fit1$aicc,fit2$aicc,fit3$aicc,fit4$aicc,fit5$aicc,fit6$aicc,fit7$aicc,fit8$aicc)
+BIC <- rbind(fit1$bic,fit2$bic,fit3$bic,fit4$bic,fit5$bic,fit6$bic,fit7$bic,fit8$bic)
+
+Modelo <- cbind(c("ETS(A,A,A)","ETS(A,Ad,A)","ETS(M,A,A)","ETS(M,Ad,A)","ETS(M,A,M)","ETS(M,M,M)",
+                  "ETS(M,Ad,M)","ETS(M,Md,M)"))
+
+d <- data.frame(Modelo,AIC,AICc,BIC)
+knitr::kable(d)
+```
+A tabela anterior mostra que o modelo ETS(A,A,A) foi o que apresentou menor valor para todos os critérios mas esses valores foram muito próximos do modelo EST(M,A,A), como a variação da sazonalidade aparenta ser razoavelmente constante, o erro aditivo é o mais adequado. O modelo selecionado foi o ETS(A,A,A), ele apresentou os parâmentros alpha = 0.4627, beta  = 1e-04 e gamma = 1e-04. 
+
+O gráfico a seguir mostra a decomposição da série. 
+
+```{r echo=FALSE}
+plot(fit1)
+```
+A seguir será feita a análise de resíduos
+
+```{r echo=FALSE, warning=FALSE}
+E <- fit1$residuals
+
+par(mfrow=c(2,2))
+plot(E)
+acf(E)
+pacf(E)
+qqnorm(E)
+qqline(E)
+
+p_valor <- c(shapiro.test(E)$p.value,kpss.test(E)$p.value,Box.test(E,lag=15,type="Ljung-Box",fitdf=3)$p.value)
+Estatística <- c(shapiro.test(E)$statistic,kpss.test(E)$statistic,Box.test(E,lag=15,type="Ljung-Box",fitdf=3)$statistic)
+Teste <- c("Normalidade","Estacionariedade","Independência")
+d <- data.frame(Estatística,p_valor)
+knitr::kable(d)
+```
+
+A partir da análise dos gráficos anteriores, percebe-se que não há indicação de autocorrelação dos resíduos e que eles aparentam seguir normalidade. Além disso, os testes de Shapiro-Wilk, Kpss e Ljung-Box apresentaram p-valor maior do que 0.5, ou seja, a um nível de significância de 5%, há evidências para afirmar que os resíduos são estacionários, independentes e apresentam distribuição normal.
+
+\section{Estudo de desempenho preditivo}
+
+Para elaboração do estudo de desempenho preditivo por janela deslizante, considera-se o estudo de janela em $n-14$ e o os erros para os horizontes até 5. Considerando os modelos já mencionados anteriormente para constriuir as funções de previsão, os gráficos e a tabela a seguir representa os resultados dos erros absolutos por horizonte de previsão.
+
+```{r include=FALSE, warning=FALSE}
+#Funções de previsão 
+
+# Sarima
+f_arima <- function(y, h){
+fit = Arima(y, order=c(1,1,0), seasonal=c(0,1,1))
+forecast(fit, h)
+}
+# Sarima com transformação 
+f_arima_boxcox <- function(y, h){
+fit = Arima(y, order=c(1,1,0), seasonal=c(0,1,1), lambda = 0.837)
+forecast(fit, h)
+}
+# ETS
+f_ets <- function(y, h){
+fit = ets(y, model="AAA")
+forecast(fit, h)
+}
+# ETS com transformação 
+f_ets_boxcox <- function(y, h){
+fit = ets(y, model="AAA", lambda = 0.837)
+forecast(fit, h)
+}
+
+# Tamanho da série 
+n = length(serie)
+
+# Erros de previsão 
+
+CV_arima = tsCV(y=serie, forecastfunction=f_arima, h=5, initial=n-14)
+CV_arima_boxcox = tsCV(y=serie, forecastfunction=f_arima_boxcox, h=5, initial=n-14)
+CV_ets = tsCV(y=serie, forecastfunction=f_ets, h=5, initial=n-14)
+CV_ets_boxcox = tsCV(y=serie, forecastfunction=f_ets_boxcox, h=5, initial=n-14)
+
+# Cálculo do erro absoluto médio (MAE) para cada horizonte de previsão
+
+MAE_arima = CV_arima %>% abs() %>% colMeans(na.rm=T)
+MAE_arima_boxcox = CV_arima_boxcox %>% abs() %>% colMeans(na.rm=T)
+MAE_ets = CV_ets %>% abs() %>% colMeans(na.rm=T)
+MAE_ets_boxcox = CV_ets_boxcox %>% abs() %>% colMeans(na.rm=T)
+
+tab = cbind(as.numeric(MAE_arima), as.numeric(MAE_ets))
+tab_boxcox = cbind(MAE_arima_boxcox, MAE_ets_boxcox)
+```
+
+
+```{r echo=FALSE}
+tabela_erros = data.frame(MAE_arima, MAE_ets, MAE_arima_boxcox, MAE_ets_boxcox)
+colnames(tabela_erros) <- c('ARIMA', 'ETS', 'ARIMA Transformada', 'ETS Transformada')
+knitr::kable(tabela_erros)
+```
+
+
+```{r,fig.align='center',fig.height=5,fig.width=7,echo=FALSE,warning=FALSE}
+# Gráfico das médias dos resultados dos erros
+
+# Sem transformação  <- as.numeric(tab)
+par(mfrow=c(1,1))
+plot.ts(tab,plot.type='s',col=c(1,2),lwd=2,xlab="h",ylab="MAE", main=bquote('Gráfico dos horizontes e seus erros de previsão'))
+legend('topleft', legend=c("ARIMA","ETS"), col=c(1,2), lwd=2)
+
+# Com transformação 
+plot.ts(tab_boxcox, plot.type='s',col=c(1,2),lwd=c(2,2),xlab="h",ylab="MAE", main=bquote('Gráfico dos horizontes e seus erros de previsão - Box-Cox'))
+legend('topleft', legend=c("ARIMA","ETS"), col=c(1,2), lwd=c(1,2))
+
+```
+
+Analisando os gráficos obtidos, percebe-se que tanto para a série original quanto para a série transformada, o modelo que obteve os menores erros médios para previsão em todos os 5 horizontes foi o modelo $ARIMA(1,1,0)x(0,1,1)_{12}$. Portanto, esse foi o modelo que obteve o melhor comportamento para o caso original e transformado. 
+
+\section{Resultados}
+
+A tabela a seguir apresenta a acurácia dos modelos selecionados e dos benchmarks.
+
+```{r echo=FALSE}
+## ajuste e previsão do modelo
+
+#arima
+xx.forec_arima <- f_arima(serie,M3[[id]]$h)
+
+#ets
+xx.forec_ets <-f_ets(serie,M3[[id]]$h)
+
+#arima_boxcox
+xx.forec_arima_boxcox <-f_arima_boxcox(serie,M3[[id]]$h)
+
+#ets_boxcox
+xx.forec_ets_boxcox <-f_ets_boxcox(serie,M3[[id]]$h)
+
+#auto.arima
+xx.forec_auto <- auto.arima(M3[[id]]$x, allowdrift=FALSE) %>% forecast(M3[[id]]$h)
+
+#ses
+xx.forec_ses <- ses(M3[[id]]$x, allowdrift=FALSE) %>% forecast(M3[[id]]$h)
+
+#holt
+xx.forec_holt <- holt(M3[[id]]$x, allowdrift=FALSE) %>% forecast(M3[[id]]$h)
+
+#ets
+xx.forec_ets <- ets(M3[[id]]$x) %>% forecast(M3[[id]]$h)
+
+#stlf
+xx.forec_stlf <- stlf(M3[[id]]$x) %>% forecast(M3[[id]]$h)
+
+#bats
+xx.forec_bats <- bats(M3[[id]]$x, allowdrift=FALSE) %>% forecast(M3[[id]]$h)
+
+#tbats
+xx.forec_tbats <- tbats(M3[[id]]$x, allowdrift=FALSE) %>% forecast(M3[[id]]$h)
+
+## calculo do erro absoluto médio da previsão
+
+MAE_arima2 <- mean(abs(M3[[id]]$xx - xx.forec_arima$mean))
+MAE_ets2 <- mean(abs(M3[[id]]$xx - xx.forec_ets$mean))
+MAE_arima_boxcox2 <- mean(abs(M3[[id]]$xx - xx.forec_arima_boxcox$mean))
+MAE_ets_boxcox2 <- mean(abs(M3[[id]]$xx - xx.forec_ets_boxcox$mean))
+MAE_auto <- mean(abs(M3[[id]]$xx - xx.forec_auto$mean))
+MAE_ses <- mean(abs(M3[[id]]$xx - xx.forec_ses$mean))
+MAE_holt <- mean(abs(M3[[id]]$xx - xx.forec_holt$mean))
+MAE_ets <- mean(abs(M3[[id]]$xx - xx.forec_ets$mean))
+MAE_stlf <- mean(abs(M3[[id]]$xx - xx.forec_stlf$mean))
+MAE_bats <- mean(abs(M3[[id]]$xx - xx.forec_bats$mean))
+MAE_tbats <- mean(abs(M3[[id]]$xx - xx.forec_tbats$mean))
+
+data_mae <- rbind(MAE_arima2,MAE_ets2,MAE_arima_boxcox2, MAE_ets_boxcox2,
+                  MAE_auto,MAE_ets,MAE_holt,MAE_ets,MAE_stlf,MAE_bats,MAE_tbats)
+
+data_mae <- as.data.frame(data_mae)
+colnames(data_mae) <- "MAE"
+rownames(data_mae) <- c('Arima', 'ETS', 'Arima BoxCox', 'ETS Box Cox',
+                        'Auto arima', 'Ses', 'Holt', 'Ets', 'Stlf', 'Bats', 'Tbats')
+```
+
+
+```{r echo=FALSE}
+knitr::kable(data_mae)
+```
+
+Com auxílio dos resultados obtidos na tabela de acurária, quando comparado os quatro modelos, sem e com transformação, percebe-se que o valor do erro absoluto médio (MAE) é menor apenas para o ETS com transformação. Portanto, a utilização da transformação no caso do ARIMA não traz uma melhor acurácia para o modelo. Em relação a comparação de todos os modelos dispostos, sugere-se a utilização do modelo com o menor valor do MAE, nesse caso, o modelo Bats é o que possui o menor valor do MAE.
+
+\section{Conclusão}
+
+O modelo ARIMA obteve os menores erros médios para previsão em todos os cinco horizontes. Porém, percebe-se pela tabela de acurácia, que os dois modelos ARIMA, tanto sem e com transformação, foram os que apresentaram os maiores valores do MAE em relação a todos os modelos dispostos.
+
+Logo, deve-se considerar um estudo mais aprofundado para decidir qual modelo utilizar, visto que o ARIMA foi o que obteve o melhor comportamento em relação ao desempenho preditivo, mas ao analisar com outros modelos, o modelo que possui a melhor acurácia, ou seja, apresenta o menor valor do erro absoluto médio (MAE), foi o de Bats. 
+
+\section{Anexo}
+
+```{r echo=TRUE, eval=FALSE, warning=FALSE, message=FALSE}
+# Biblioteca
+library(Mcomp)
+library(tseries)
+library(tidyverse)
+library(forecast)
+
+# Escolha da série
+data(M3)
+id=2049
+serie <- M3[[id]]$x
+
+# Visualização da série escolhida
+plot(serie)
+
+# Decomposição da série
+
+mstl(serie, lambda = 'auto') %>%
+  autoplot() +
+  labs(x = "Ano") +
+  theme_bw()
+
+# ARIMA
+# estacionariedade
+serie %>% ndiffs()
+
+serie %>% diff() %>% nsdiffs()
+
+X <- serie %>% diff() %>% diff(lag=12)
+
+p_valor <- c(kpss.test(X)$p.value)
+Estatística <- c(kpss.test(X)$statistic)
+Teste <- c("Estacionariedade")
+d <- data.frame(Estatística,p_valor)
+knitr::kable(d)
+
+cbind('Série Original' = serie, 'Uma Diferença' = diff(serie),
+      'Diferença Sazonal' = X) %>% 
+  autoplot(facets = T) +
+  labs(x = "Ano", y = "Remessas de usina de Papel de Jornal") +
+  scale_x_continuous(breaks = seq(1982,1992,1)) +
+  theme_bw() 
+
+
+# GRAFICOS ACF E PACF
+par(mfrow=c(1,2))     # NORMAL E SAZONAL
+acf(X,lag.max = 5*12) # AMORTIZADO E CORTE NO 1
+pacf(X,lag.max = 5*12) # CORTE NO 1 E AMORTIZADO
+# AR 1 e MAs 1
+
+# ARIMA(1,1,0)x(0,1,1)_{12}
+
+fit = Arima(serie, order=c(1,1,0), seasonal = c(0,1,1),
+            method = "CSS",include.mean = F)
+
+dfit= data.frame(fit$coef)
+names(dfit)= "Coeficientes"
+knitr::kable(dfit, align = "c")
+knitr::kable(data.frame(
+  Modelo='Arima(y = serie, order = c(1, 1, 0), seasonal = c(0, 1, 1), 
+  include.mean = F, method = "CSS")'),align = "c") #call do modelo
+
+# analise de residuos
+par(mfrow=c(1,1))
+residuos <- fit$residuals %>% window(start=c(1984,3))
+#par(mfrow=c(1,3))
+plot(residuos,main="Resíduos após inicialização do modelo");
+par(mfrow=c(1,2))
+qqnorm(residuos); qqline(residuos);
+acf(residuos, lag.max=12*5)
+
+p_valor <- c(shapiro.test(residuos)$p.value,kpss.test(residuos)$p.value,
+             Box.test(residuos, lag=15, type = "Ljung-Box")$p.value)
+Estatística <- c(shapiro.test(residuos)$statistic,kpss.test(residuos)$statistic,
+                 Box.test(residuos, lag=15, type = "Ljung-Box")$statistic)
+Teste <- c("Normalidade","Estacionariedade","Independencia")
+d <- data.frame(Estatística,p_valor)
+knitr::kable(d)
+
+# Serie com transformação
+
+
+## USANDO BOXCOX
+lambda <-BoxCox.lambda(serie)
+
+serie_bc <- BoxCox(serie, lambda = lambda)
+plot.ts(serie_bc,main="Série Transformada")
+
+serie_bc %>% ndiffs()
+
+serie_bc %>% diff() %>% nsdiffs() 
+
+X_bc <- serie_bc %>% diff() %>% diff(lag=12)
+
+
+p_valor <- c(kpss.test(X_bc)$p.value)
+Estatística <- c(kpss.test(X_bc)$statistic)
+Teste <- c("Estacionariedade")
+d <- data.frame(Estatística,p_valor)
+knitr::kable(d)
+
+cbind('Série Transformada' = serie_bc, 'Uma Diferença' = diff(serie_bc),
+      'Diferença Sazonal' = X_bc) %>% 
+  autoplot(facets = T) +
+  labs(x = "Ano", y = "Remessas de usina de Papel de Jornal") +
+  scale_x_continuous(breaks = seq(1982,1992,1)) +
+  theme_bw() 
+
+##GRAFICOS ACF E PACF
+par(mfrow=c(1,2))       # NORMAL E SAZONAL
+acf(X_bc,lag.max = 5*12) # AMORTIZADO E CORTE NO 1
+pacf(X_bc,lag.max = 5*12) # CORTE NO 1 E AMORTIZADO
+#AR 1 E MAs 1
+
+# ajustando o modelo
+fit2 = Arima(serie_bc, order=c(1,1,0), seasonal = c(0,1,1),
+             method = "CSS",include.mean = F,lambda = lambda)
+dfit2= data.frame(fit2$coef)
+names(dfit2)= "Coeficientes"
+knitr::kable(dfit2, align = "c")
+knitr::kable(data.frame(Modelo="Arima(y = serie_bc, 
+                        order = c(1, 1, 0), seasonal = c(0, 1, 1), 
+                        include.mean = F, lambda = lambda, method = 'CSS')"),
+             align = "c") #call do modelo
+
+# analise de residuos
+par(mfrow=c(1,1))
+residuos <- fit2$residuals %>% window(start=c(1984,3))
+#par(mfrow=c(1,3))
+plot(residuos,main="Resíduos após inicialização do modelo");
+par(mfrow=c(1,2))
+qqnorm(residuos); qqline(residuos);
+acf(residuos, lag.max=12*5)
+
+p_valor <- c(shapiro.test(residuos)$p.value,kpss.test(residuos)$p.value,
+             Box.test(residuos, lag=15, type = "Ljung-Box")$p.value)
+Estatística <- c(shapiro.test(residuos)$statistic,kpss.test(residuos)$statistic,
+                 Box.test(residuos, lag=15, type = "Ljung-Box")$statistic)
+Teste <- c("Normalidade","Estacionariedade","Independencia")
+d <- data.frame(Estatística,p_valor)
+knitr::kable(d)
+
+# ETS
+
+# Resultado de critério de informação ETS sem transformação
+fit1<- ets(serie,model = "AAA")
+fit2<- ets(serie,model = "AAA",damped = TRUE)
+fit3<- ets(serie,model = "MAA")
+fit4<- ets(serie,model = "MAA",damped = TRUE)
+fit5<- ets(serie,model = "MAM")
+fit6<- ets(serie,model = "MMM")
+fit7<- ets(serie,model = "MAM",damped = TRUE)
+fit8<- ets(serie,model = "MMM", damped = TRUE)
+
+AIC <- rbind(fit1$aic,fit2$aic,fit3$aic,fit4$aic,
+             fit5$aic,fit6$aic,fit7$aic,fit8$aic)
+AICc <- rbind(fit1$aicc,fit2$aicc,fit3$aicc,fit4$aicc,
+              fit5$aicc,fit6$aicc,fit7$aicc,fit8$aicc)
+BIC <- rbind(fit1$bic,fit2$bic,fit3$bic,fit4$bic,
+             fit5$bic,fit6$bic,fit7$bic,fit8$bic)
+
+Modelo <- cbind(c("ETS(A,A,A)","ETS(A,Ad,A)","ETS(M,A,A)","ETS(M,Ad,A)",
+                  "ETS(M,A,M)","ETS(M,M,M)","ETS(M,Ad,M)","ETS(M,Md,M)"))
+
+d <- data.frame(Modelo,AIC,AICc,BIC)
+knitr::kable(d)
+
+# Decomposição ETS sem transformação
+plot(fit1)
+
+# Análise de resíduos ETS sem transformação
+E <- fit1$residuals
+
+par(mfrow=c(2,2))
+plot(E)
+acf(E)
+pacf(E)
+qqnorm(E)
+qqline(E)
+
+# Testes para ETS sem transformação
+p_valor <- c(shapiro.test(E)$p.value,kpss.test(E)$p.value,
+             Box.test(E,lag=15,type="Ljung-Box",fitdf=3)$p.value)
+Estatistica <- c(shapiro.test(E)$statistic,kpss.test(E)$statistic,
+                 Box.test(E,lag=15,type="Ljung-Box",fitdf=3)$statistic)
+Teste <- c("Normalidade","Estacionariedade","Independencia")
+d <- data.frame(Estatistica,p_valor)
+knitr::kable(d)
+
+# ETS com transformação
+lambda <- serie %>% BoxCox.lambda()
+serie_box <- serie %>% BoxCox(lambda)
+
+# Visualização e decomposição da ETS com transformação
+plot(serie_box,main="Serie com\ntransformacao de Box-Cox")
+mstl(serie_box)%>%plot()
+
+# Resultado de critério de informação ETS com transformação
+fit1<- ets(serie_box,model = "AAA")
+fit2<- ets(serie_box,model = "AAA",damped = TRUE)
+fit3<- ets(serie_box,model = "MAA")
+fit4<- ets(serie_box,model = "MAA",damped = TRUE)
+fit5<- ets(serie_box,model = "MAM")
+fit6<- ets(serie_box,model = "MMM")
+fit7<- ets(serie_box,model = "MAM",damped = TRUE)
+fit8<- ets(serie_box,model = "MMM", damped = TRUE)
+
+AIC <- rbind(fit1$aic,fit2$aic,fit3$aic,fit4$aic,
+             fit5$aic,fit6$aic,fit7$aic,fit8$aic)
+AICc <- rbind(fit1$aicc,fit2$aicc,fit3$aicc,fit4$aicc,
+              fit5$aicc,fit6$aicc,fit7$aicc,fit8$aicc)
+BIC <- rbind(fit1$bic,fit2$bic,fit3$bic,fit4$bic,
+             fit5$bic,fit6$bic,fit7$bic,fit8$bic)
+
+Modelo <- cbind(c("ETS(A,A,A)","ETS(A,Ad,A)","ETS(M,A,A)",
+                  "ETS(M,Ad,A)","ETS(M,A,M)","ETS(M,M,M)",
+                  "ETS(M,Ad,M)","ETS(M,Md,M)"))
+
+d <- data.frame(Modelo,AIC,AICc,BIC)
+knitr::kable(d)
+
+# Decomposição ETS com transformação
+plot(fit1)
+
+# Análise de resíduos ETS com transformação
+E <- fit1$residuals
+
+par(mfrow=c(2,2))
+plot(E)
+acf(E)
+pacf(E)
+qqnorm(E)
+qqline(E)
+
+# Testes para ETS com transformação
+p_valor <- c(shapiro.test(E)$p.value,kpss.test(E)$p.value,
+             Box.test(E,lag=15,type="Ljung-Box",fitdf=3)$p.value)
+Estatística <- c(shapiro.test(E)$statistic,kpss.test(E)$statistic,
+                 Box.test(E,lag=15,type="Ljung-Box",fitdf=3)$statistic)
+Teste <- c("Normalidade","Estacionariedade","Independência")
+d <- data.frame(Estatística,p_valor)
+knitr::kable(d)
+
+#Funções de previsão 
+
+# Sarima
+f_arima <- function(y, h){
+fit = Arima(y, order=c(1,1,0), seasonal=c(0,1,1))
+forecast(fit, h)
+}
+# Sarima com transformação 
+f_arima_boxcox <- function(y, h){
+fit = Arima(y, order=c(1,1,0), seasonal=c(0,1,1), lambda = 0.837)
+forecast(fit, h)
+}
+# ETS
+f_ets <- function(y, h){
+fit = ets(y, model="AAA")
+forecast(fit, h)
+}
+# ETS com transformação 
+f_ets_boxcox <- function(y, h){
+fit = ets(y, model="AAA", lambda = 0.837)
+forecast(fit, h)
+}
+
+# Tamanho da série 
+n = length(serie)
+
+# Erros de previsão 
+
+CV_arima = tsCV(y=serie, forecastfunction=f_arima, h=5, initial=n-14)
+CV_arima_boxcox = tsCV(y=serie, forecastfunction=f_arima_boxcox, 
+                       h=5, initial=n-14)
+CV_ets = tsCV(y=serie, forecastfunction=f_ets, h=5, initial=n-14)
+CV_ets_boxcox = tsCV(y=serie, forecastfunction=f_ets_boxcox, 
+                     h=5, initial=n-14)
+
+# Cálculo do erro absoluto médio (MAE) para cada horizonte de previsão
+
+MAE_arima = CV_arima %>% abs() %>% colMeans(na.rm=T)
+MAE_arima_boxcox = CV_arima_boxcox %>% abs() %>% colMeans(na.rm=T)
+MAE_ets = CV_ets %>% abs() %>% colMeans(na.rm=T)
+MAE_ets_boxcox = CV_ets_boxcox %>% abs() %>% colMeans(na.rm=T)
+
+tab = cbind(as.numeric(MAE_arima), as.numeric(MAE_ets))
+tab_boxcox = cbind(MAE_arima_boxcox, MAE_ets_boxcox)
+
+tabela_erros = data.frame(MAE_arima, MAE_ets, MAE_arima_boxcox, MAE_ets_boxcox)
+colnames(tabela_erros) <- c('ARIMA', 'ETS', 
+                            'ARIMA Transformada', 'ETS Transformada')
+knitr::kable(tabela_erros)
+
+# Gráfico das médias dos resultados dos erros
+
+# Sem transformação  <- as.numeric(tab)
+par(mfrow=c(1,1))
+plot.ts(tab,plot.type='s',col=c(1,2),lwd=2,xlab="h",ylab="MAE", 
+        main=bquote('Gráfico dos horizontes e seus erros de previsão'))
+legend('topleft', legend=c("ARIMA","ETS"), col=c(1,2), lwd=2)
+
+# Com transformação 
+plot.ts(tab_boxcox, plot.type='s',col=c(1,2),lwd=c(2,2),xlab="h",ylab="MAE", 
+        main=bquote('Gráfico dos horizontes e seus erros de previsão - Box-Cox'))
+legend('topleft', legend=c("ARIMA","ETS"), col=c(1,2), lwd=c(1,2))
+
+# Acurácia
+## ajuste e previsão do modelo
+
+#arima
+xx.forec_arima <- f_arima(serie,M3[[id]]$h)
+
+#ets
+xx.forec_ets <-f_ets(serie,M3[[id]]$h)
+
+#arima_boxcox
+xx.forec_arima_boxcox <-f_arima_boxcox(serie,M3[[id]]$h)
+
+#ets_boxcox
+xx.forec_ets_boxcox <-f_ets_boxcox(serie,M3[[id]]$h)
+
+#auto.arima
+xx.forec_auto <- auto.arima(M3[[id]]$x, allowdrift=FALSE) %>% forecast(M3[[id]]$h)
+
+#ses
+xx.forec_ses <- ses(M3[[id]]$x, allowdrift=FALSE) %>% forecast(M3[[id]]$h)
+
+#holt
+xx.forec_holt <- holt(M3[[id]]$x, allowdrift=FALSE) %>% forecast(M3[[id]]$h)
+
+#ets
+xx.forec_ets <- ets(M3[[id]]$x) %>% forecast(M3[[id]]$h)
+
+#stlf
+xx.forec_stlf <- stlf(M3[[id]]$x) %>% forecast(M3[[id]]$h)
+
+#bats
+xx.forec_bats <- bats(M3[[id]]$x, allowdrift=FALSE) %>% forecast(M3[[id]]$h)
+
+#tbats
+xx.forec_tbats <- tbats(M3[[id]]$x, allowdrift=FALSE) %>% forecast(M3[[id]]$h)
+
+## calculo do erro absoluto médio da previsão
+
+MAE_arima2 <- mean(abs(M3[[id]]$xx - xx.forec_arima$mean))
+MAE_ets2 <- mean(abs(M3[[id]]$xx - xx.forec_ets$mean))
+MAE_arima_boxcox2 <- mean(abs(M3[[id]]$xx - xx.forec_arima_boxcox$mean))
+MAE_ets_boxcox2 <- mean(abs(M3[[id]]$xx - xx.forec_ets_boxcox$mean))
+MAE_auto <- mean(abs(M3[[id]]$xx - xx.forec_auto$mean))
+MAE_ses <- mean(abs(M3[[id]]$xx - xx.forec_ses$mean))
+MAE_holt <- mean(abs(M3[[id]]$xx - xx.forec_holt$mean))
+MAE_ets <- mean(abs(M3[[id]]$xx - xx.forec_ets$mean))
+MAE_stlf <- mean(abs(M3[[id]]$xx - xx.forec_stlf$mean))
+MAE_bats <- mean(abs(M3[[id]]$xx - xx.forec_bats$mean))
+MAE_tbats <- mean(abs(M3[[id]]$xx - xx.forec_tbats$mean))
+
+data_mae <- rbind(MAE_arima2,MAE_ets2,MAE_arima_boxcox2, MAE_ets_boxcox2,
+                  MAE_auto,MAE_ets,MAE_holt,MAE_ets,MAE_stlf,MAE_bats,MAE_tbats)
+
+data_mae <- as.data.frame(data_mae)
+colnames(data_mae) <- "MAE"
+rownames(data_mae) <- c('Arima', 'ETS', 'Arima BoxCox', 'ETS Box Cox',
+                        'Auto arima', 'Ses', 'Holt', 'Ets', 
+                        'Stlf', 'Bats', 'Tbats')
+knitr::kable(data_mae)
+
+```
+
+
